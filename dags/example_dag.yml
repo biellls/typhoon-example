@@ -1,0 +1,43 @@
+name: example_dag
+schedule_interval: 'rate(10 minutes)'
+# schedule_interval: '0 6 * * *'  # Cron expression to run at 6am
+active: false
+
+nodes:
+  send_tables:
+    function: typhoon.functions.flow_control.branch
+    config:
+      seq:
+        - public.person
+        - public.job
+        - public.property
+
+  extract_table:
+    function: relational.extract_relational_db
+    config:
+      conn_id: test_db
+
+  load_csv_s3:
+    function: files_systems.write
+    async: false
+    config:
+      path: my-typhoon-test-bucket
+
+
+edges:
+  mp_extract:
+    source: mp_tables
+    adapter:
+        function: relational_adapter.multiplex_relational
+        config:
+            limit: 20
+    destination: extract_table
+
+  table_to_s3:
+    source: extract_table
+    adapter:
+        function: relational_adapter.relational_to_s3
+        config:
+            system_name: postgres
+    destination: load_csv_s3
+

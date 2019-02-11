@@ -1,0 +1,48 @@
+name: example_dag2
+schedule_interval: 'rate(10 minutes)'
+#active: false
+
+nodes:
+  send_table_names:
+    function: typhoon.flow_control.branch
+    config:
+      branches:
+        - person
+        - job
+        - property
+
+  extract_table:
+    function: typhoon.relational.execute_query
+    config:
+      conn_id: test_db
+      schema: public
+
+  load_csv_s3:
+    function: typhoon.filesystem.write_data
+    config:
+      conn_id: s3_data_lake
+
+
+edges:
+  send_extraction_params:
+    source: send_table_names
+    adapter:
+        function: typhoon.from_branch.table_list_to_execute_query
+        config:
+          query: "SELECT * FROM {{ table_name }} WHERE creation_date='{{ date_string }}'"
+          batch_size: 2
+          query_template_params:
+            date_string: $DAG_CONFIG.ds
+    destination: extract_table
+
+  table_to_s3:
+    async: false        # The table may be large, it doesn't make sense to serialize each batch and send asynchronously
+    source: extract_table
+    adapter:
+        function: from_relational.to_s3_write_csv
+        config:
+            system_name: postgres
+            ds: $DAG_CONFIG.ds
+            etl_timestamp: $DAG_CONFIG.etl_timestamp
+    destination: load_csv_s3
+
