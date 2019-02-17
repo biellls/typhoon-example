@@ -1,43 +1,58 @@
 name: example_dag
 schedule_interval: 'rate(10 minutes)'
 # schedule_interval: '0 6 * * *'  # Cron expression to run at 6am
-active: false
+#active: false
 
 nodes:
-  send_tables:
-    function: typhoon.functions.flow_control.branch
+  send_pages:
+    function: typhoon.flow_control.branch
     config:
-      seq:
-        - public.person
-        - public.job
-        - public.property
+      delay: 10   # To comply with hackernews robots.txt
+      # branches => APPLY: range(1, 4)  # Alternative way to define the branches
+      branches:
+        - 1
+        - 2
+        - 3
 
-  extract_table:
-    function: relational.extract_relational_db
-    config:
-      conn_id: test_db
+  scrape_pages:
+    function: functions.scrape.extract_hackernews_page
 
   load_csv_s3:
-    function: files_systems.write
+    function: typhoon.filesystem.write_data
     async: false
     config:
-      path: my-typhoon-test-bucket
+      conn_id: s3_data_lake
+
+  write_df_to_db:
+    function: typhoon.relational.df_write
+    async: false
+    config:
+      sql_alchemy_conn_id: hn_db
 
 
 edges:
-  mp_extract:
-    source: mp_tables
+  scrape_hackernews:
+    source: send_pages
     adapter:
-        function: relational_adapter.multiplex_relational
-        config:
-            limit: 20
-    destination: extract_table
+      page_num => APPLY: $SOURCE
+    destination: scrape_pages
 
   table_to_s3:
-    source: extract_table
+    source: scrape_pages
     adapter:
-        function: relational_adapter.relational_to_s3
-        config:
-            system_name: postgres
+      data => APPLY:
+        - transformations.data.df_to_csv($SOURCE[0])
+        - transformations.data.to_bytes_buffer($1)
+      path => APPLY:
+        - str('scraper/hackernews/{{dag_config.ds}}/{{dag_config.etl_timestamp}}_hackernews_part{{ part_num }}.csv')
+        - typhoon.templates.render($1, dag_config=$DAG_CONFIG, part_num=$SOURCE[1])
     destination: load_csv_s3
+
+  df_to_db:
+    source: scrape_pages
+    adapter:
+      df => APPLY: $SOURCE[0]
+      table_name: hackernews
+    destination: write_df_to_db
+
 
